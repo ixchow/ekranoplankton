@@ -24,6 +24,8 @@ SHADERS.load(gl);
 //TEXTURES.load();
 //AUDIO.load();
 
+const MISC_BUFFER = gl.createBuffer(); //used for a bunch of debug drawing stuff
+
 const TICK = 1.0 / 60.0;
 
 class Camera {
@@ -51,7 +53,7 @@ class Camera {
 	}
 };
 
-let CAMERA = new Camera();
+const CAMERA = new Camera();
 
 
 /* something like this for checkpoints later:
@@ -61,6 +63,215 @@ if (document.location.search.match(/^\?\d+/)) {
 	setLevel(0);
 }
 */
+
+const TURN_HALF_LIFE = 0.5;
+const TURN_RATE = 2.0 * Math.PI / 0.5;
+
+const HALF_LIFE_PERP_WING = 0.25;
+const HALF_LIFE_ALONG_FORWARD_WING = 10.0;
+const HALF_LIFE_ALONG_BACKWARD_WING = 0.5;
+const HALF_LIFE_BLOB = 0.25;
+
+const MIN_CARRY_AIRSPEED = 1.0;
+const MAX_CARRY_AIRSPEED = 1.5;
+
+class Plankton {
+	constructor(gl) {
+		this.pos = [0,0];
+		this.angle = 0;
+		this.vel = [0,0];
+		this.acc = 0;
+
+		this.wing = 0;
+		this.foil = 0;
+	}
+
+	tick(mouse, isAir) {
+		this.prevPos = this.pos.slice();
+		this.prevAngle = this.angle;
+		this.prevWing = this.wing;
+
+		let DIR = [
+			mouse.worldX - this.pos[0],
+			mouse.worldY - this.pos[1],
+		];
+		if (isNaN(DIR[0])) {
+			DIR[0] = 0;
+			DIR[1] = 1;
+		}
+		let ANG = Math.atan2(DIR[1], DIR[0]);
+
+		//wing morph:
+		if (mouse.down) {
+			this.wing = Math.min(1, this.wing + TICK / 0.1);
+		} else {
+			this.wing = Math.max(0, this.wing - TICK / 0.05);
+		}
+
+		let dirBefore = [
+			Math.cos(this.angle),
+			Math.sin(this.angle)
+		];
+
+		{ //steering:
+			let turn = (ANG - this.angle) % (2.0 * Math.PI);
+			if (turn <-Math.PI) turn += 2.0 * Math.PI;
+			if (turn > Math.PI) turn -= 2.0 * Math.PI;
+
+			{ //exponential:
+				const amt = (1.0 - (0.5 ** (TICK / TURN_HALF_LIFE))) * turn;
+				turn -= amt;
+				this.angle += amt;
+			}
+
+			if (turn < 0.0) {
+				this.angle += Math.max(-TURN_RATE * TICK,turn);
+			} else {
+				this.angle += Math.min(TURN_RATE * TICK,turn);
+			}
+
+			this.angle = this.angle % (2.0 * Math.PI);
+		}
+
+		{ //foil morph:
+			//TBD
+		}
+
+		let dir = [
+			Math.cos(this.angle),
+			Math.sin(this.angle)
+		];
+
+		//gravity:
+		this.vel[0] += 0.0 * TICK;
+		this.vel[1] += -10.0 * TICK;
+
+		{ //wing dynamics stuff:
+			//(also carry velocity!)
+			let along = this.vel[0] * dir[0] + this.vel[1] * dir[1];
+			let perp = this.vel[0] * -dir[1] + this.vel[1] * dir[0];
+			/* OLD
+			let alongBefore = this.vel[0] * dirBefore[0] + this.vel[1] * dirBefore[1];
+			let perpBefore = this.vel[0] * -dirBefore[1] + this.vel[1] * dirBefore[0];
+
+			//carry might not be needed if lift!
+			if (alongBefore > MIN_CARRY_AIRSPEED) {
+				let carry = this.wing * Math.max(1, (along - MIN_CARRY_AIRSPEED) / (MAX_CARRY_AIRSPEED - MIN_CARRY_AIRSPEED));
+				carry = 0;
+				along += (alongBefore - along) * carry;
+				perp += (perpBefore - perp) * carry;
+			}
+
+
+
+			let HALF_LIFE_ALONG_FORWARD = this.wing * (HALF_LIFE_ALONG_FORWARD_WING - HALF_LIFE_BLOB) + HALF_LIFE_BLOB;
+			let HALF_LIFE_ALONG_BACKWARD = this.wing * (HALF_LIFE_ALONG_BACKWARD_WING - HALF_LIFE_BLOB) + HALF_LIFE_BLOB;
+			let HALF_LIFE_PERP = this.wing * (HALF_LIFE_PERP_WING - HALF_LIFE_BLOB) + HALF_LIFE_BLOB;
+
+			if (along > 0) {
+				along *= 0.5 ** (TICK / HALF_LIFE_ALONG_FORWARD);
+			} else {
+				along *= 0.5 ** (TICK / HALF_LIFE_ALONG_BACKWARD);
+			}
+			along += -perp * (1.0 - (0.5 ** (TICK / HALF_LIFE_PERP))); //jank lift
+			perp *= 0.5 ** (TICK / HALF_LIFE_PERP);
+			*/
+
+			if (this.wing > 0.5) {
+				//wing is rotating momentum of some perpendicular airflow?
+				// a bold departure from all physical theory!
+				let removed = (1.0 - 0.5 ** (TICK / HALF_LIFE_PERP_WING));
+				along += 0.4 * Math.abs(removed * perp);
+				perp *= 1.0 - removed;
+			} else {
+				along *= 0.5 ** (TICK / HALF_LIFE_BLOB);
+				perp *= 0.5 ** (TICK / HALF_LIFE_BLOB);
+			}
+
+			this.vel = [
+				along * dir[0] + perp * -dir[1],
+				along * dir[1] + perp *  dir[0]
+			];
+		}
+
+		this.pos[0] += this.vel[0] * TICK;
+		this.pos[1] += this.vel[1] * TICK;
+
+		//don't fall forever:
+		if (this.pos[1] < 0.0) {
+			this.pos[1] = 10.0;
+			this.vel[1] = 0.0;
+		}
+	}
+
+	update(elapsed, mouse) {
+		this.acc += elapsed;
+		while (this.acc > 0) {
+			this.tick(mouse, true);
+			this.acc -= TICK;
+		}
+	}
+
+	draw(gl, CLIP_FROM_WORLD) {
+		const attribs = [];
+
+		//TODO: backstepping
+		const pos = this.pos.slice();
+		const angle = this.angle;
+		const wing = this.wing;
+
+		const dir = [
+			Math.cos(angle),
+			Math.sin(angle)
+		];
+
+		for (let i = 0; i <= 32; i += 1) {
+			const d = [
+				Math.cos(i / 32 * Math.PI * 2.0),
+				Math.sin(i / 32 * Math.PI * 2.0),
+			];
+			const r = 1.0;
+			d[1] *= wing * (0.2 - 1.0) + 1.0;
+			attribs.push(
+				r * (dir[0] * d[0] + -dir[1] * d[1]) + pos[0],
+				r * (dir[1] * d[0] +  dir[0] * d[1]) + pos[1],
+
+				1,1,1
+			);
+		}
+
+		const u = {
+			CLIP_FROM_LOCAL:CLIP_FROM_WORLD,
+		};
+		const prog = SHADERS.color;
+		gl.useProgram(prog);
+
+		helpers.setUniforms(gl, prog, u);
+
+		//upload and draw attribs:
+		gl.bindBuffer(gl.ARRAY_BUFFER, MISC_BUFFER);
+		gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(attribs), gl.STREAM_DRAW);
+
+		const stride = 2*4+3*4;
+		//0 => Position
+		gl.enableVertexAttribArray(0);
+		gl.vertexAttribPointer(0, 2, gl.FLOAT, false, stride, 0);
+		//1 => Color
+		gl.enableVertexAttribArray(1);
+		gl.vertexAttribPointer(1, 3, gl.FLOAT, false, stride, 2*4);
+
+		gl.drawArrays(gl.LINES, 0, attribs.length/(stride/4));
+
+		gl.disableVertexAttribArray(1);
+		gl.disableVertexAttribArray(0);
+
+
+	}
+}
+
+
+const PLANKTON = new Plankton(gl);
+window.PLANKTON = PLANKTON;
 
 
 update.maxPending = 0;
@@ -84,12 +295,14 @@ function update(elapsed) {
 	MOUSE.worldX = MOUSE.x * (CAMERA.maxX - CAMERA.minX) + CAMERA.minX;
 	MOUSE.worldY = MOUSE.y * (CAMERA.maxY - CAMERA.minY) + CAMERA.minY;
 
-	draw();
+	PLANKTON.update(elapsed, MOUSE);
 
+	MOUSE.downs = 0;
+
+	draw();
 	queueUpdate();
 }
 
-const MISC_BUFFER = gl.createBuffer();
 
 function loadDraw(amount) {
 	const C = (0.25 - 0.0) * amount + 1.0;
@@ -156,7 +369,6 @@ function draw() {
 		}
 
 
-
 		const u = {
 			CLIP_FROM_LOCAL:CLIP_FROM_WORLD,
 		};
@@ -182,6 +394,8 @@ function draw() {
 		gl.disableVertexAttribArray(1);
 		gl.disableVertexAttribArray(0);
 	}
+
+	PLANKTON.draw(gl, CLIP_FROM_WORLD);
 
 }
 
@@ -236,7 +450,7 @@ function keyup(evt) {
 window.addEventListener('keydown', keydown);
 window.addEventListener('keyup', keyup);
 
-const MOUSE = {x:NaN, y:NaN};
+const MOUSE = {x:NaN, y:NaN, down:false, downs:0};
 
 //based (loosely) on amoeba-escape's mouse handling:
 function setMouse(evt) {
@@ -275,6 +489,7 @@ function handleDown() {
 		//AUDIO.mute();
 	}
 	MOUSE.down = true;
+	MOUSE.downs += 1;
 }
 
 function handleUp() {
