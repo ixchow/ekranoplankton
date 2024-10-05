@@ -31,6 +31,7 @@ class Camera {
 		this.at = [0,2.5];
 		this.radius = 10; //square radius
 		this.aspect = 1;
+		this.updateBounds();
 	}
 	makeClipFromWorld() {
 		const sx = 2.0 / (2.0 * this.radius * Math.max(1, this.aspect) );
@@ -41,6 +42,12 @@ class Camera {
 			0.0, 0.0, 1.0, 0.0,
 			sx * -this.at[0], sy * -this.at[1], 0.0, 1.0
 		]);
+	}
+	updateBounds() {
+		this.minX = -this.radius * Math.max(1, this.aspect) + this.at[0];
+		this.minY = -this.radius * Math.max(1, 1 / this.aspect) + this.at[1];
+		this.maxX =  this.radius * Math.max(1, this.aspect) + this.at[0];
+		this.maxY =  this.radius * Math.max(1, 1 / this.aspect) + this.at[1];
 	}
 };
 
@@ -72,9 +79,10 @@ function update(elapsed) {
 	*/
 
 	CAMERA.aspect = CANVAS.clientWidth / CANVAS.clientHeight;
+	CAMERA.updateBounds();
 
-	MOUSE.worldX = (MOUSE.x * 2 - 1) * Math.max(1, CAMERA.aspect) * CAMERA.radius + CAMERA.at[0];
-	MOUSE.worldY = (MOUSE.y * 2 - 1) * Math.max(1, 1 / CAMERA.aspect) * CAMERA.radius + CAMERA.at[1];
+	MOUSE.worldX = MOUSE.x * (CAMERA.maxX - CAMERA.minX) + CAMERA.minX;
+	MOUSE.worldY = MOUSE.y * (CAMERA.maxY - CAMERA.minY) + CAMERA.minY;
 
 	draw();
 
@@ -108,6 +116,24 @@ function draw() {
 
 	{ //some sort of grid:
 		const attribs = [];
+
+		{
+			const GRID_STEP = 0.75;
+			const minXi = Math.floor(CAMERA.minX / GRID_STEP);
+			const maxXi = Math.ceil(CAMERA.maxX / GRID_STEP);
+			const minYi = Math.floor(CAMERA.minY / GRID_STEP);
+			const maxYi = Math.ceil(CAMERA.maxY / GRID_STEP);
+			for (let xi = minXi; xi <= maxXi; xi += 1) {
+				attribs.push( GRID_STEP * xi,CAMERA.minY, 0.5,0.5,0.5 );
+				attribs.push( GRID_STEP * xi,CAMERA.maxY, 0.5,0.5,0.5 );
+			}
+			for (let yi = minYi; yi <= maxYi; yi += 1) {
+				attribs.push( CAMERA.minX,GRID_STEP * yi, 0.5,0.5,0.5 );
+				attribs.push( CAMERA.maxX,GRID_STEP * yi, 0.5,0.5,0.5 );
+			}
+		}
+
+
 		attribs.push( 0,0, 1,0,0 );
 		attribs.push( 1,0, 1,0,0 );
 		attribs.push( 0,0, 0,1,0 );
@@ -117,6 +143,19 @@ function draw() {
 		attribs.push( MOUSE.worldX+0.5,MOUSE.worldY+0.5, 1,1,0 );
 		attribs.push( MOUSE.worldX-0.5,MOUSE.worldY+0.5, 1,1,0 );
 		attribs.push( MOUSE.worldX+0.5,MOUSE.worldY-0.5, 1,1,0 );
+
+		if (MOUSE.down) {
+			attribs.push( MOUSE.worldX-0.25,MOUSE.worldY-0.25, 1,1,0 );
+			attribs.push( MOUSE.worldX+0.25,MOUSE.worldY-0.25, 1,1,0 );
+			attribs.push( MOUSE.worldX+0.25,MOUSE.worldY-0.25, 1,1,0 );
+			attribs.push( MOUSE.worldX+0.25,MOUSE.worldY+0.25, 1,1,0 );
+			attribs.push( MOUSE.worldX+0.25,MOUSE.worldY+0.25, 1,1,0 );
+			attribs.push( MOUSE.worldX-0.25,MOUSE.worldY+0.25, 1,1,0 );
+			attribs.push( MOUSE.worldX-0.25,MOUSE.worldY+0.25, 1,1,0 );
+			attribs.push( MOUSE.worldX-0.25,MOUSE.worldY-0.25, 1,1,0 );
+		}
+
+
 
 		const u = {
 			CLIP_FROM_LOCAL:CLIP_FROM_WORLD,
@@ -233,11 +272,13 @@ function handleDown() {
 	} else if (MOUSE.overTCHOW) {
 		window.open('http://tchow.com', '_blank').focus();
 	} else if (MOUSE.overMute) {
-		AUDIO.mute();
+		//AUDIO.mute();
 	}
+	MOUSE.down = true;
 }
 
 function handleUp() {
+	MOUSE.down = false;
 }
 
 CANVAS.addEventListener('touchstart', function(evt){
