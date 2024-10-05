@@ -67,13 +67,20 @@ if (document.location.search.match(/^\?\d+/)) {
 const TURN_HALF_LIFE = 0.5;
 const TURN_RATE = 2.0 * Math.PI / 0.5;
 
-const HALF_LIFE_PERP_WING = 0.25;
+const HALF_LIFE_PERP_WING = 0.04;
+const HALF_LIFE_PERP_WING_STALL = 0.2;
 const HALF_LIFE_ALONG_FORWARD_WING = 10.0;
 const HALF_LIFE_ALONG_BACKWARD_WING = 0.5;
-const HALF_LIFE_BLOB = 0.25;
+const HALF_LIFE_BLOB = 0.2;
 
-const MIN_CARRY_AIRSPEED = 1.0;
-const MAX_CARRY_AIRSPEED = 1.5;
+
+//in stall, perp behaves like blob and redirect doesn't work:
+const MIN_STALL_AIRSPEED = 3.0;
+const MAX_STALL_AIRSPEED = 4.0;
+
+const GROUND_EFFECT_REDIRECT = 0.4;
+const FREE_AIR_REDIREFCT = 0.1;
+
 
 class Plankton {
 	constructor(gl) {
@@ -150,43 +157,42 @@ class Plankton {
 			//(also carry velocity!)
 			let along = this.vel[0] * dir[0] + this.vel[1] * dir[1];
 			let perp = this.vel[0] * -dir[1] + this.vel[1] * dir[0];
-			/* OLD
-			let alongBefore = this.vel[0] * dirBefore[0] + this.vel[1] * dirBefore[1];
-			let perpBefore = this.vel[0] * -dirBefore[1] + this.vel[1] * dirBefore[0];
 
-			//carry might not be needed if lift!
-			if (alongBefore > MIN_CARRY_AIRSPEED) {
-				let carry = this.wing * Math.max(1, (along - MIN_CARRY_AIRSPEED) / (MAX_CARRY_AIRSPEED - MIN_CARRY_AIRSPEED));
-				carry = 0;
-				along += (alongBefore - along) * carry;
-				perp += (perpBefore - perp) * carry;
+			let alongWing = along;
+			let perpWing = perp;
+
+			{ //wing stuff:
+
+				let stall;
+				if (along < MIN_STALL_AIRSPEED) stall = 1.0;
+				else if (along > MAX_STALL_AIRSPEED) stall = 0.0;
+				else stall = (along - MAX_STALL_AIRSPEED) / (MIN_STALL_AIRSPEED - MAX_STALL_AIRSPEED);
+
+				if (alongWing > 0.0) {
+					alongWing *= 0.5 ** (TICK / HALF_LIFE_ALONG_FORWARD_WING);
+				} else {
+					alongWing *= 0.5 ** (TICK / HALF_LIFE_ALONG_BACKWARD_WING);
+				}
+
+				let half_life_perp = stall * (HALF_LIFE_PERP_WING_STALL - HALF_LIFE_PERP_WING) + HALF_LIFE_PERP_WING;
+
+				// a bold departure from physical theory:
+				let removed = perpWing * (1.0 - 0.5 ** (TICK / half_life_perp));
+				//alongWing += 0.1 * Math.abs(removed);
+				perpWing -= removed;
+
 			}
 
-
-
-			let HALF_LIFE_ALONG_FORWARD = this.wing * (HALF_LIFE_ALONG_FORWARD_WING - HALF_LIFE_BLOB) + HALF_LIFE_BLOB;
-			let HALF_LIFE_ALONG_BACKWARD = this.wing * (HALF_LIFE_ALONG_BACKWARD_WING - HALF_LIFE_BLOB) + HALF_LIFE_BLOB;
-			let HALF_LIFE_PERP = this.wing * (HALF_LIFE_PERP_WING - HALF_LIFE_BLOB) + HALF_LIFE_BLOB;
-
-			if (along > 0) {
-				along *= 0.5 ** (TICK / HALF_LIFE_ALONG_FORWARD);
-			} else {
-				along *= 0.5 ** (TICK / HALF_LIFE_ALONG_BACKWARD);
+			let alongBlob = along;
+			let perpBlob = perp;
+			
+			{
+				alongBlob *= 0.5 ** (TICK / HALF_LIFE_BLOB);
+				perpBlob *= 0.5 ** (TICK / HALF_LIFE_BLOB);
 			}
-			along += -perp * (1.0 - (0.5 ** (TICK / HALF_LIFE_PERP))); //jank lift
-			perp *= 0.5 ** (TICK / HALF_LIFE_PERP);
-			*/
 
-			if (this.wing > 0.5) {
-				//wing is rotating momentum of some perpendicular airflow?
-				// a bold departure from all physical theory!
-				let removed = (1.0 - 0.5 ** (TICK / HALF_LIFE_PERP_WING));
-				along += 0.4 * Math.abs(removed * perp);
-				perp *= 1.0 - removed;
-			} else {
-				along *= 0.5 ** (TICK / HALF_LIFE_BLOB);
-				perp *= 0.5 ** (TICK / HALF_LIFE_BLOB);
-			}
+			along = (alongWing - alongBlob) * this.wing + alongBlob;
+			perp = (perpWing - perpBlob) * this.wing + perpBlob;
 
 			this.vel = [
 				along * dir[0] + perp * -dir[1],
@@ -199,7 +205,9 @@ class Plankton {
 
 		//don't fall forever:
 		if (this.pos[1] < 0.0) {
+			this.pos[0] = 10.0;
 			this.pos[1] = 10.0;
+			this.vel[0] = 0.0;
 			this.vel[1] = 0.0;
 		}
 	}
@@ -289,15 +297,31 @@ function update(elapsed) {
 	}
 	*/
 
-	CAMERA.aspect = CANVAS.clientWidth / CANVAS.clientHeight;
-	CAMERA.updateBounds();
-
 	MOUSE.worldX = MOUSE.x * (CAMERA.maxX - CAMERA.minX) + CAMERA.minX;
 	MOUSE.worldY = MOUSE.y * (CAMERA.maxY - CAMERA.minY) + CAMERA.minY;
 
 	PLANKTON.update(elapsed, MOUSE);
 
 	MOUSE.downs = 0;
+
+	CAMERA.at[0] += (PLANKTON.pos[0] - CAMERA.at[0]) * (1.0 - 0.5 ** (elapsed / 1.0));
+	CAMERA.at[1] += (PLANKTON.pos[1] - CAMERA.at[1]) * (1.0 - 0.5 ** (elapsed / 1.0));
+
+	{
+		let to = [
+			PLANKTON.pos[0] - CAMERA.at[0],
+			PLANKTON.pos[1] - CAMERA.at[1]
+		];
+		let len = Math.hypot(to[0], to[1]);
+		let keep = 0.5 ** (elapsed / 1.0);
+		keep = Math.max(keep - elapsed / 5.0, 0.0);
+
+		CAMERA.at[0] += to[0] * (1.0 - keep);
+		CAMERA.at[1] += to[1] * (1.0 - keep);
+	}
+
+	CAMERA.aspect = CANVAS.clientWidth / CANVAS.clientHeight;
+	CAMERA.updateBounds();
 
 	draw();
 	queueUpdate();
@@ -341,8 +365,13 @@ function draw() {
 				attribs.push( GRID_STEP * xi,CAMERA.maxY, 0.5,0.5,0.5 );
 			}
 			for (let yi = minYi; yi <= maxYi; yi += 1) {
-				attribs.push( CAMERA.minX,GRID_STEP * yi, 0.5,0.5,0.5 );
-				attribs.push( CAMERA.maxX,GRID_STEP * yi, 0.5,0.5,0.5 );
+				if (yi == 0) {
+					attribs.push( CAMERA.minX,GRID_STEP * yi, 1,1,1 );
+					attribs.push( CAMERA.maxX,GRID_STEP * yi, 1,1,1 );
+				} else {
+					attribs.push( CAMERA.minX,GRID_STEP * yi, 0.5,0.5,0.5 );
+					attribs.push( CAMERA.maxX,GRID_STEP * yi, 0.5,0.5,0.5 );
+				}
 			}
 		}
 
