@@ -113,6 +113,7 @@ const UNIFORM_TYPES_STR = {
 	"FLOAT_MAT2":  { per:2*2, name:"mat2", func:(gl,u,value) => { gl.uniformMatrix2fv(u.location, false, value); } },
 	"FLOAT_MAT3":  { per:3*3, name:"mat3", func:(gl,u,value) => { gl.uniformMatrix3fv(u.location, false, value); } },
 	"FLOAT_MAT4":  { per:4*4, name:"mat4", func:(gl,u,value) => { gl.uniformMatrix4fv(u.location, false, value); } },
+	"FLOAT_MAT3x2":{ per:3*2, name:"mat3x2", func:(gl,u,value) => { gl.uniformMatrix3x2fv(u.location, false, value); } },
 	"SAMPLER_2D":  { per:1,   name:"sampler2D",   func:(gl,u,value) => { gl.uniform1iv(u.location, value); } },
 	"SAMPLER_CUBE":{ per:1,   name:"samplerCube", func:(gl,u,value) => { gl.uniform1iv(u.location, value); } },
 };

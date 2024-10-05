@@ -4,6 +4,8 @@
 
 import { SHADERS } from './shaders.mjs';
 
+import { WORLD, Block } from './terrain.mjs';
+
 import * as helpers from './gl-helpers.mjs';
 
 const CANVAS = document.getElementsByTagName("canvas")[0];
@@ -28,10 +30,12 @@ const MISC_BUFFER = gl.createBuffer(); //used for a bunch of debug drawing stuff
 
 const TICK = 1.0 / 60.0;
 
+const PLAY_RADIUS = 10.0;
+
 class Camera {
 	constructor() {
 		this.at = [0,2.5];
-		this.radius = 10; //square radius
+		this.radius = PLAY_RADIUS; //square radius
 		this.aspect = 1;
 		this.updateBounds();
 	}
@@ -51,9 +55,165 @@ class Camera {
 		this.maxX =  this.radius * Math.max(1, this.aspect) + this.at[0];
 		this.maxY =  this.radius * Math.max(1, 1 / this.aspect) + this.at[1];
 	}
+	setMouseWorld(MOUSE) {
+		MOUSE.worldX = MOUSE.x * (this.maxX - this.minX) + this.minX;
+		MOUSE.worldY = MOUSE.y * (this.maxY - this.minY) + this.minY;
+	}
 };
 
 const CAMERA = new Camera();
+window.CAMERA = CAMERA;
+
+let EDIT_MODE = true;
+
+let SELECTION = [];
+
+let ACTION = null;
+
+class ActionGrab {
+	constructor(selection) {
+		this.targets = selection.slice();
+		this.before = [];
+		this.base = [MOUSE.worldX, MOUSE.worldY];
+		for (const target of this.targets) {
+			this.before.push(target.at.slice());
+		}
+	}
+	update() {
+		const offset = [
+			MOUSE.worldX - this.base[0],
+			MOUSE.worldY - this.base[1],
+		];
+		for (let i = 0; i < this.targets.length; ++i) {
+			this.targets[i].at[0] = this.before[i][0] + offset[0];
+			this.targets[i].at[1] = this.before[i][1] + offset[1];
+			this.targets[i].updateFrame();
+		}
+	}
+	commit() {
+		update();
+	}
+	cancel() {
+		for (let i = 0; i < this.targets.length; ++i) {
+			this.targets[i].at[0] = this.before[i][0];
+			this.targets[i].at[1] = this.before[i][1];
+			this.targets[i].updateFrame();
+		}
+	}
+};
+
+class ActionRotate {
+	constructor(selection) {
+		this.targets = selection.slice();
+		this.beforeAt = [];
+		this.beforeAngle = [];
+		this.center = [0,0];
+		for (const target of this.targets) {
+			this.center[0] += target.at[0];
+			this.center[1] += target.at[1];
+			this.beforeAt.push(target.at.slice());
+			this.beforeAngle.push(target.angle);
+		}
+		this.center[0] /= this.targets.length;
+		this.center[1] /= this.targets.length;
+		this.baseAngle = Math.atan2(
+			MOUSE.worldY - this.center[1],
+			MOUSE.worldX - this.center[0]
+		);
+	}
+	update() {
+		const delta = Math.atan2(
+			MOUSE.worldY - this.center[1],
+			MOUSE.worldX - this.center[0]
+		) - this.baseAngle;
+
+		const right = [
+			Math.cos(delta),
+			Math.sin(delta)
+		];
+		const up = [
+			-right[1],
+			right[0]
+		];
+
+		for (let i = 0; i < this.targets.length; ++i) {
+			let x = this.beforeAt[i][0] - this.center[0];
+			let y = this.beforeAt[i][1] - this.center[1];
+
+			this.targets[i].at[0] = x * right[0] + y * up[0] + this.center[0];
+			this.targets[i].at[1] = x * right[1] + y * up[1] + this.center[1];
+
+			this.targets[i].angle = this.beforeAngle[i] + delta;
+
+			this.targets[i].updateFrame();
+		}
+	}
+	commit() {
+		update();
+	}
+	cancel() {
+		for (let i = 0; i < this.targets.length; ++i) {
+			this.targets[i].at[0] = this.beforeAt[i][0];
+			this.targets[i].at[1] = this.beforeAt[i][1];
+			this.targets[i].angle = this.beforeAngle[i];
+
+			this.targets[i].updateFrame();
+		}
+	}
+};
+
+class ActionResize {
+	constructor(selection, roundMode) {
+		this.roundMode = roundMode;
+		this.targets = selection.slice();
+		this.base = [MOUSE.worldX, MOUSE.worldY];
+		this.beforeRadii = [];
+		this.beforeRound = [];
+		for (const target of this.targets) {
+			this.beforeRadii.push(target.radii.slice());
+			this.beforeRound.push(target.round);
+		}
+	}
+	update() {
+		const delta = [
+			MOUSE.worldX - this.base[0],
+			MOUSE.worldY - this.base[1]
+		];
+
+		if (this.roundMode) {
+			for (let i = 0; i < this.targets.length; ++i) {
+				let r = Math.max(0.0, this.beforeRound[i] + delta[0]);
+				console.log(r);
+				this.targets[i].round = r;
+				this.targets[i].updateFrame();
+			}
+		} else {
+			for (let i = 0; i < this.targets.length; ++i) {
+				let rx = Math.max(0.5, this.beforeRadii[i][0] + delta[0]);
+				let ry = Math.max(0.5, this.beforeRadii[i][1] + delta[1]);
+
+				this.targets[i].radii[0] = rx;
+				this.targets[i].radii[1] = ry;
+
+				this.targets[i].updateFrame();
+			}
+		}
+	}
+	commit() {
+		update();
+	}
+	cancel() {
+		for (let i = 0; i < this.targets.length; ++i) {
+			this.targets[i].radii[0] = this.beforeRadii[i][0];
+			this.targets[i].radii[1] = this.beforeRadii[i][1];
+			this.targets[i].round = this.beforeRound[i];
+
+			this.targets[i].updateFrame();
+		}
+	}
+};
+
+
 
 
 /* something like this for checkpoints later:
@@ -205,7 +365,7 @@ class Plankton {
 
 		//don't fall forever:
 		if (this.pos[1] < 0.0) {
-			this.pos[0] = 10.0;
+			this.pos[0] = 0.0;
 			this.pos[1] = 10.0;
 			this.vel[0] = 0.0;
 			this.vel[1] = 0.0;
@@ -273,14 +433,12 @@ class Plankton {
 		gl.disableVertexAttribArray(1);
 		gl.disableVertexAttribArray(0);
 
-
 	}
 }
 
 
 const PLANKTON = new Plankton(gl);
 window.PLANKTON = PLANKTON;
-
 
 update.maxPending = 0;
 
@@ -297,27 +455,43 @@ function update(elapsed) {
 	}
 	*/
 
-	MOUSE.worldX = MOUSE.x * (CAMERA.maxX - CAMERA.minX) + CAMERA.minX;
-	MOUSE.worldY = MOUSE.y * (CAMERA.maxY - CAMERA.minY) + CAMERA.minY;
+	CAMERA.setMouseWorld(MOUSE);
 
-	PLANKTON.update(elapsed, MOUSE);
+	MOUSE.hovered = null;
 
-	MOUSE.downs = 0;
+	if (!EDIT_MODE) {
 
-	CAMERA.at[0] += (PLANKTON.pos[0] - CAMERA.at[0]) * (1.0 - 0.5 ** (elapsed / 1.0));
-	CAMERA.at[1] += (PLANKTON.pos[1] - CAMERA.at[1]) * (1.0 - 0.5 ** (elapsed / 1.0));
+		PLANKTON.update(elapsed, MOUSE);
 
-	{
-		let to = [
-			PLANKTON.pos[0] - CAMERA.at[0],
-			PLANKTON.pos[1] - CAMERA.at[1]
-		];
-		let len = Math.hypot(to[0], to[1]);
-		let keep = 0.5 ** (elapsed / 1.0);
-		keep = Math.max(keep - elapsed / 5.0, 0.0);
+		MOUSE.downs = 0;
 
-		CAMERA.at[0] += to[0] * (1.0 - keep);
-		CAMERA.at[1] += to[1] * (1.0 - keep);
+		{
+			let to = [
+				PLANKTON.pos[0] - CAMERA.at[0],
+				PLANKTON.pos[1] - CAMERA.at[1]
+			];
+			let len = Math.hypot(to[0], to[1]);
+			let keep = 0.5 ** (elapsed / 1.0);
+			keep = Math.max(keep - elapsed / 2.0, 0.0);
+	
+			CAMERA.at[0] += to[0] * (1.0 - keep);
+			CAMERA.at[1] += to[1] * (1.0 - keep);
+		}
+	} else {
+
+		if (ACTION) {
+			ACTION.update();
+		}
+
+
+
+		let under = WORLD.underMouse(MOUSE);
+
+		if (under.length) {
+			MOUSE.hovered = under[MOUSE.selectOffset % under.length];
+		}
+
+		MOUSE.downs = 0;
 	}
 
 	CAMERA.aspect = CANVAS.clientWidth / CANVAS.clientHeight;
@@ -424,6 +598,8 @@ function draw() {
 		gl.disableVertexAttribArray(0);
 	}
 
+	WORLD.draw(gl, {CAMERA, CLIP_FROM_WORLD, EDIT_MODE, hovered:MOUSE.hovered, SELECTION} );
+
 	PLANKTON.draw(gl, CLIP_FROM_WORLD);
 
 }
@@ -458,31 +634,80 @@ queueUpdate();
 function keydown(evt) {
 	//AUDIO.interacted = true;
 	if (evt.repeat) /* nothing */;
-	else if (evt.code === 'KeyE') WORLD.limbs[0].grow = true;
-	else if (evt.code === 'KeyW') WORLD.limbs[1].grow = true;
-	else if (evt.code === 'KeyQ') WORLD.limbs[2].grow = true;
-	else if (evt.code === 'KeyA') WORLD.limbs[3].grow = true;
-	else if (evt.code === 'KeyD') WORLD.limbs[4].grow = true;
-	else if (evt.code === 'KeyN') next();
-	else if (evt.code === 'KeyP') prev();
-	else if (evt.code === 'KeyR') reset();
+	else if (evt.code === 'Enter') {
+		EDIT_MODE = !EDIT_MODE;
+		if (!EDIT_MODE) {
+			CAMERA.radius = PLAY_RADIUS;
+		}
+	}
+	if (EDIT_MODE) {
+		if (ACTION) {
+			if (evt.code === 'Escape') {
+				ACTION.cancel();
+				ACTION = null;
+			}
+		} else {
+			if (evt.code === 'Equal') {
+				MOUSE.selectOffset += 1;
+			} else if (evt.code === 'Space') {
+				for (const block of SELECTION) {
+					block.seed = Math.random();
+				}
+			} else if (evt.code === 'KeyA') {
+				if (SELECTION.length) {
+					SELECTION = [];
+				} else {
+					SELECTION = WORLD.blocks.slice();
+				}
+			} else if (evt.code === 'KeyG') {
+				if (SELECTION.length) {
+					ACTION = new ActionGrab(SELECTION);
+				}
+			} else if (evt.code === 'KeyR') {
+				if (SELECTION.length) {
+					ACTION = new ActionRotate(SELECTION);
+				}
+			} else if (evt.code === 'KeyS') {
+				if (SELECTION.length) {
+					ACTION = new ActionResize(SELECTION, evt.shiftKey);
+				}
+			} else if (evt.code === 'KeyD' && evt.shiftKey) {
+				if (SELECTION.length) {
+					for (let i = 0; i < SELECTION.length; ++i) {
+						SELECTION[i] = Block.load(SELECTION[i].save());
+					}
+					WORLD.blocks.push(...SELECTION);
+					ACTION = new ActionGrab(SELECTION);
+				}
+			} else if (evt.code === 'KeyX') {
+				for (const block of SELECTION) {
+					const idx = WORLD.blocks.indexOf(block);
+					if (idx !== -1) {
+						WORLD.blocks.splice(idx,1);
+					}
+				}
+				SELECTION = [];
+			}
+		}
+	}
+
+	console.log(evt.code);
 }
 
 function keyup(evt) {
-	if      (evt.code === 'KeyE') WORLD.limbs[0].grow = false;
-	else if (evt.code === 'KeyW') WORLD.limbs[1].grow = false;
-	else if (evt.code === 'KeyQ') WORLD.limbs[2].grow = false;
-	else if (evt.code === 'KeyA') WORLD.limbs[3].grow = false;
-	else if (evt.code === 'KeyD') WORLD.limbs[4].grow = false;
+	//nothing ATM
 }
 
 window.addEventListener('keydown', keydown);
 window.addEventListener('keyup', keyup);
 
-const MOUSE = {x:NaN, y:NaN, down:false, downs:0};
+const MOUSE = {x:NaN, y:NaN, down:false, downs:0, hovered:null, selectOffset:0};
 
 //based (loosely) on amoeba-escape's mouse handling:
 function setMouse(evt) {
+
+	const old = [MOUSE.worldX, MOUSE.worldY];
+
 	var rect = CANVAS.getBoundingClientRect();
 	MOUSE.x = (evt.clientX - rect.left) / rect.width;
 	MOUSE.y = (evt.clientY - rect.bottom) / -rect.height;
@@ -500,9 +725,18 @@ function setMouse(evt) {
 	MOUSE.overTCHOW = inRect("tchow");
 	MOUSE.overMute = inRect("mute");
 	*/
+
+	//middle-mouse to pan:
+	if (EDIT_MODE && (evt.buttons & 4)) {
+		CAMERA.setMouseWorld(MOUSE);
+		CAMERA.at[0] += old[0] - MOUSE.worldX;
+		CAMERA.at[1] += old[1] - MOUSE.worldY;
+		CAMERA.updateBounds();
+		CAMERA.setMouseWorld(MOUSE);
+	}
 }
 
-function handleDown() {
+function handleDown(evt) {
 	//AUDIO.interacted = true;
 	if (MOUSE.overReset) {
 		reset();
@@ -519,6 +753,25 @@ function handleDown() {
 	}
 	MOUSE.down = true;
 	MOUSE.downs += 1;
+	if (EDIT_MODE) {
+		if (ACTION) {
+			ACTION.commit();
+			ACTION = null;
+		} else {
+			if (!evt.shiftKey) {
+				SELECTION = [];
+			}
+			if (MOUSE.hovered) {
+				const idx = SELECTION.indexOf(MOUSE.hovered);
+				if (idx === -1) {
+					SELECTION.push(MOUSE.hovered);
+				} else {
+					SELECTION.splice(idx,1);
+				}
+			}
+		}
+	}
+
 }
 
 function handleUp() {
@@ -562,4 +815,24 @@ window.addEventListener('mouseup', function(evt){
 	return false;
 });
 
+window.addEventListener('wheel', function(evt){
+	evt.preventDefault();
+
+	let zoom = 2.0 ** (evt.deltaY / 138.0 * 0.1);
+
+
+	CAMERA.setMouseWorld(MOUSE);
+	let old = [MOUSE.worldX, MOUSE.worldY];
+
+	CAMERA.radius *= zoom;
+
+	CAMERA.updateBounds();
+	CAMERA.setMouseWorld(MOUSE);
+	CAMERA.at[0] += old[0] - MOUSE.worldX;
+	CAMERA.at[1] += old[1] - MOUSE.worldY;
+	CAMERA.updateBounds();
+	CAMERA.setMouseWorld(MOUSE);
+
+	return false;
+});
 
