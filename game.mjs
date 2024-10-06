@@ -4,7 +4,7 @@
 
 import { SHADERS } from './shaders.mjs';
 
-import { WORLD, Block } from './terrain.mjs';
+import { WORLD, Block, MODES } from './terrain.mjs';
 
 import * as helpers from './gl-helpers.mjs';
 
@@ -91,7 +91,7 @@ class ActionGrab {
 		}
 	}
 	commit() {
-		update();
+		this.update();
 	}
 	cancel() {
 		for (let i = 0; i < this.targets.length; ++i) {
@@ -149,7 +149,7 @@ class ActionRotate {
 		}
 	}
 	commit() {
-		update();
+		this.update();
 	}
 	cancel() {
 		for (let i = 0; i < this.targets.length; ++i) {
@@ -200,7 +200,7 @@ class ActionResize {
 		}
 	}
 	commit() {
-		update();
+		this.update();
 	}
 	cancel() {
 		for (let i = 0; i < this.targets.length; ++i) {
@@ -233,6 +233,10 @@ const HALF_LIFE_ALONG_FORWARD_WING = 10.0;
 const HALF_LIFE_ALONG_BACKWARD_WING = 0.5;
 const HALF_LIFE_BLOB = 0.2;
 
+const HALF_LIFE_ALONG_FORWARD_SWIM = 1.0;
+const HALF_LIFE_ALONG_BACKWARD_SWIM = 0.2;
+const HALF_LIFE_PERP_SWIM = 0.2;
+const HALF_LIFE_BLOB_SWIM = 0.1;
 
 //in stall, perp behaves like blob and redirect doesn't work:
 const MIN_STALL_AIRSPEED = 3.0;
@@ -244,6 +248,10 @@ const FREE_AIR_REDIREFCT = 0.1;
 
 class Plankton {
 	constructor(gl) {
+		this.reset();
+	}
+
+	reset() {
 		this.pos = [0,0];
 		this.angle = 0;
 		this.vel = [0,0];
@@ -251,12 +259,18 @@ class Plankton {
 
 		this.wing = 0;
 		this.foil = 0;
+
+		this.setPrev();
 	}
 
-	tick(mouse, isAir) {
+	setPrev() {
 		this.prevPos = this.pos.slice();
 		this.prevAngle = this.angle;
 		this.prevWing = this.wing;
+	}
+
+	tick(mouse, isAir) {
+		this.setPrev();
 
 		let DIR = [
 			mouse.worldX - this.pos[0],
@@ -268,8 +282,25 @@ class Plankton {
 		}
 		let ANG = Math.atan2(DIR[1], DIR[0]);
 
+		//check the world:
+		let ground = false;
+		let air = false;
+		let water = false;
+		{
+			let s = WORLD.sample(this.pos);
+			if (s.ground) {
+				ground = true;
+			} else if (s.water) {
+				water = true;
+			} else if (s.air) {
+				air = true;
+			}
+		}
+
+
 		//wing morph:
-		if (mouse.down) {
+		let oldWing = this.wing;
+		if (!ground && mouse.down) {
 			this.wing = Math.min(1, this.wing + TICK / 0.1);
 		} else {
 			this.wing = Math.max(0, this.wing - TICK / 0.05);
@@ -284,6 +315,8 @@ class Plankton {
 			let turn = (ANG - this.angle) % (2.0 * Math.PI);
 			if (turn <-Math.PI) turn += 2.0 * Math.PI;
 			if (turn > Math.PI) turn -= 2.0 * Math.PI;
+
+			if (ground) turn = 0.0;
 
 			{ //exponential:
 				const amt = (1.0 - (0.5 ** (TICK / TURN_HALF_LIFE))) * turn;
@@ -301,7 +334,7 @@ class Plankton {
 		}
 
 		{ //foil morph:
-			//TBD
+			//TBD?
 		}
 
 		let dir = [
@@ -310,14 +343,20 @@ class Plankton {
 		];
 
 		//gravity:
-		this.vel[0] += 0.0 * TICK;
-		this.vel[1] += -10.0 * TICK;
+		if (air) {
+			this.vel[0] += 0.0 * TICK;
+			this.vel[1] += -10.0 * TICK;
+		}
 
-		{ //wing dynamics stuff:
-			//(also carry velocity!)
-			let along = this.vel[0] * dir[0] + this.vel[1] * dir[1];
-			let perp = this.vel[0] * -dir[1] + this.vel[1] * dir[0];
+		let along = this.vel[0] * dir[0] + this.vel[1] * dir[1];
+		let perp = this.vel[0] * -dir[1] + this.vel[1] * dir[0];
 
+		if (ground) {
+			//ground "dynamics", "stuff":
+			along = perp = 0.0;
+		} else if (air) {
+			//wing dynamics stuff:
+		
 			let alongWing = along;
 			let perpWing = perp;
 
@@ -354,22 +393,44 @@ class Plankton {
 			along = (alongWing - alongBlob) * this.wing + alongBlob;
 			perp = (perpWing - perpBlob) * this.wing + perpBlob;
 
-			this.vel = [
-				along * dir[0] + perp * -dir[1],
-				along * dir[1] + perp *  dir[0]
-			];
+		} else if (water) {
+			//swim dynamics stuff:
+
+			let alongWing = along;
+			let perpWing = perp;
+
+			{ //swim wing stuff:
+				if (alongWing > 0.0) {
+					alongWing *= 0.5 ** (TICK / HALF_LIFE_ALONG_FORWARD_SWIM);
+				} else {
+					alongWing *= 0.5 ** (TICK / HALF_LIFE_ALONG_BACKWARD_SWIM);
+				}
+
+				alongWing += Math.max(0.0, 5.0 * (this.wing - oldWing));
+
+				perpWing *= 0.5 ** (TICK / HALF_LIFE_PERP_SWIM);
+			}
+
+			let alongBlob = along;
+			let perpBlob = perp;
+			
+			{
+				alongBlob *= 0.5 ** (TICK / HALF_LIFE_BLOB_SWIM);
+				perpBlob *= 0.5 ** (TICK / HALF_LIFE_BLOB_SWIM);
+			}
+
+			along = (alongWing - alongBlob) * this.wing + alongBlob;
+			perp = (perpWing - perpBlob) * this.wing + perpBlob;
 		}
+
+		this.vel = [
+			along * dir[0] + perp * -dir[1],
+			along * dir[1] + perp *  dir[0]
+		];
+
 
 		this.pos[0] += this.vel[0] * TICK;
 		this.pos[1] += this.vel[1] * TICK;
-
-		//don't fall forever:
-		if (this.pos[1] < 0.0) {
-			this.pos[0] = 0.0;
-			this.pos[1] = 10.0;
-			this.vel[0] = 0.0;
-			this.vel[1] = 0.0;
-		}
 	}
 
 	update(elapsed, mouse) {
@@ -453,6 +514,8 @@ function update(elapsed) {
 		return;
 	}
 
+	WORLD.time = (WORLD.time + elapsed) % 300.0;
+
 	CAMERA.setMouseWorld(MOUSE);
 
 	MOUSE.hovered = null;
@@ -480,8 +543,6 @@ function update(elapsed) {
 		if (ACTION) {
 			ACTION.update();
 		}
-
-
 
 		let under = WORLD.underMouse(MOUSE);
 
@@ -523,10 +584,12 @@ function draw() {
 
 	const CLIP_FROM_WORLD = CAMERA.makeClipFromWorld();
 
+	WORLD.draw(gl, {CAMERA, CLIP_FROM_WORLD, EDIT_MODE, hovered:MOUSE.hovered, SELECTION} );
+
 	{ //some sort of grid:
 		const attribs = [];
 
-		{
+		/*{
 			const GRID_STEP = 0.75;
 			const minXi = Math.floor(CAMERA.minX / GRID_STEP);
 			const maxXi = Math.ceil(CAMERA.maxX / GRID_STEP);
@@ -545,7 +608,7 @@ function draw() {
 					attribs.push( CAMERA.maxX,GRID_STEP * yi, 0.5,0.5,0.5 );
 				}
 			}
-		}
+		}*/
 
 
 		attribs.push( 0,0, 1,0,0 );
@@ -557,6 +620,50 @@ function draw() {
 		attribs.push( MOUSE.worldX+0.5,MOUSE.worldY+0.5, 1,1,0 );
 		attribs.push( MOUSE.worldX-0.5,MOUSE.worldY+0.5, 1,1,0 );
 		attribs.push( MOUSE.worldX+0.5,MOUSE.worldY-0.5, 1,1,0 );
+
+		let col = [1,1,0];
+		if (EDIT_MODE) {
+			const s = WORLD.sample([MOUSE.worldX, MOUSE.worldY]);
+
+			function sCol(s) {
+				if ('air' in s) {
+					if (s.cave) {
+						return [0.7,0.7,0];
+					} else {
+						return [1,1,0];
+					}
+				} else if ('ground' in s) {
+					return [1, 0, 0];
+				} else if ('water' in s) {
+					if (s.cave) {
+						return [0, 0, 0.5];
+					} else {
+						return [0, 0, 1];
+					}
+				}
+			}
+
+			//performance test:
+			for (let xi = -10; xi <= 10; ++xi) {
+				for (let yi = -10; yi <= 10; ++yi) {
+					const x = MOUSE.worldX + xi / 10.0;
+					const y = MOUSE.worldY + yi / 10.0;
+					const s = WORLD.sample([x,y]);
+					const sc = sCol(s);
+					const R = 0.9 / 10;
+					attribs.push( x - R, y - R, ...sc);
+					attribs.push( x + R, y + R, ...sc);
+					attribs.push( x - R, y + R, ...sc);
+					attribs.push( x + R, y - R, ...sc);
+				}
+			}
+		}
+		
+		attribs.push( MOUSE.worldX-0.5,MOUSE.worldY-0.5, ...col );
+		attribs.push( MOUSE.worldX+0.5,MOUSE.worldY+0.5, ...col );
+		attribs.push( MOUSE.worldX-0.5,MOUSE.worldY+0.5, ...col );
+		attribs.push( MOUSE.worldX+0.5,MOUSE.worldY-0.5, ...col );
+
 
 		if (MOUSE.down) {
 			attribs.push( MOUSE.worldX-0.25,MOUSE.worldY-0.25, 1,1,0 );
@@ -596,8 +703,6 @@ function draw() {
 		gl.disableVertexAttribArray(0);
 	}
 
-	WORLD.draw(gl, {CAMERA, CLIP_FROM_WORLD, EDIT_MODE, hovered:MOUSE.hovered, SELECTION} );
-
 	PLANKTON.draw(gl, CLIP_FROM_WORLD);
 
 }
@@ -631,21 +736,29 @@ queueUpdate();
 
 function keydown(evt) {
 	//AUDIO.interacted = true;
-	if (evt.repeat) /* nothing */;
-	else if (evt.code === 'Enter') {
-		EDIT_MODE = !EDIT_MODE;
-		if (!EDIT_MODE) {
-			CAMERA.radius = PLAY_RADIUS;
+	if (evt.repeat) return;
+
+	if (!EDIT_MODE) {
+		if (evt.code === 'Backspace') {
+			if (!EDIT_MODE) {
+				PLANKTON.reset();
+				CAMERA.at[0] = PLANKTON.pos[0];
+				CAMERA.at[1] = PLANKTON.pos[1];
+			}
+		} else if (evt.code === 'Enter') {
+			EDIT_MODE = true;
 		}
-	}
-	if (EDIT_MODE) {
+	} else { // EDIT_MODE:
 		if (ACTION) {
 			if (evt.code === 'Escape') {
 				ACTION.cancel();
 				ACTION = null;
 			}
 		} else {
-			if (evt.code === 'Equal') {
+			if (evt.code === 'Enter') {
+				EDIT_MODE = false;
+				CAMERA.radius = PLAY_RADIUS;
+			} else if (evt.code === 'Equal') {
 				MOUSE.selectOffset += 1;
 			} else if (evt.code === 'Space') {
 				for (const block of SELECTION) {
@@ -685,6 +798,22 @@ function keydown(evt) {
 					}
 				}
 				SELECTION = [];
+			} else if (evt.code === 'Digit1') {
+				for (const block of SELECTION) {
+					block.mode = MODES.GROUND;
+				}
+			} else if (evt.code === 'Digit2') {
+				for (const block of SELECTION) {
+					block.mode = MODES.CAVE;
+				}
+			} else if (evt.code === 'Digit3') {
+				for (const block of SELECTION) {
+					block.mode = MODES.WATER;
+				}
+			} else if (evt.code === 'Digit4') {
+				for (const block of SELECTION) {
+					block.mode = MODES.WATER_PULSES;
+				}
 			} else if (evt.code === 'F4') {
 				WORLD.requestSave();
 			}

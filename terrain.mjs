@@ -12,8 +12,63 @@ const MARGIN = 2.0; //want "SDF-like" behavior within margin of surface, so will
 export const MODES = {
 	GROUND:0,
 	CAVE:1,
-	WATER:2
+	WATER:2,
+	WATER_PULSES:3,
 };
+
+//these are mirrored from the glsl for CPU-side sampling.
+
+//based on https://iquilezles.org/articles/smin/
+function smin( a, b, k ) {
+	k *= 1.0/(1.0-Math.sqrt(0.5));
+	const h = Math.max( k-Math.abs(a-b), 0.0 )/k;
+	const b2 = 13.0/4.0 - 4.0*Math.sqrt(0.5);
+	const b3 =  3.0/4.0 - 1.0*Math.sqrt(0.5);
+	return Math.min(a,b) - k*h*h*(h*b3*(h-4.0)+b2);
+}
+//from iq's circular wave noise example: https://www.shadertoy.com/view/tldSRj
+function g(/*vec2*/ n ) {
+	return {
+		x:Math.sin(n.x*n.y*12+1),
+		y:Math.sin(n.x*n.y*17+2),
+	};
+}
+function mix(a,b,t) {
+	return (b-a)*t+a;
+}
+function dot(a,b) {
+	return a.x * b.x + a.y * b.y;
+}
+function noise(/*vec2*/ p, ofs) {
+	const kF = 2.0;  // make 6 to see worms
+	const i = {
+		x:Math.floor(p.x),
+		y:Math.floor(p.y)
+	};
+	let f = {
+		x:p.x - Math.floor(p.x),
+		y:p.y - Math.floor(p.y)
+	};
+	f.x = f.x*f.x*(3.0-2.0*f.x);
+	f.y = f.y*f.y*(3.0-2.0*f.y);
+
+
+	return mix(mix(Math.sin(ofs+kF*dot(p,g({x:i.x+0,y:i.y+0}))),
+	               Math.sin(ofs+kF*dot(p,g({x:i.x+1,y:i.y+0}))),f.x),
+	           mix(Math.sin(ofs+kF*dot(p,g({x:i.x+0,y:i.y+1}))),
+	               Math.sin(ofs+kF*dot(p,g({x:i.x+1,y:i.y+1}))),f.x),f.y);
+}
+
+//from iq's list of 2D SDFs: https://iquilezles.org/articles/distfunctions2d/
+//modified for uniform radius
+function sdRoundedBox( /*vec2*/ p, /*vec2*/ b, /*float*/ r ) {
+	const q = {
+		x:Math.abs(p.x)-b.x+r,
+		y:Math.abs(p.y)-b.y+r
+	};
+	return Math.min(Math.max(q.x,q.y),0) + Math.hypot(Math.max(q.x,0), Math.max(q.y,0)) - r;
+}
+
 
 export class Block {
 	constructor(mode, at, angle, radii, round, seed = 0.0) {
@@ -24,13 +79,6 @@ export class Block {
 		this.round = round;
 		this.seed = seed;
 		this.updateFrame();
-
-		this.func = (x,y) => {
-			return Math.min(
-				Math.abs(x) - this.radii[0],
-				Math.abs(y) - this.radii[1]
-			);
-		};
 	}
 
 	static load(object) {
@@ -64,12 +112,32 @@ export class Block {
 	}
 
 	//negative: inside, positive: outside
-	sample(at) {
-		const local = [
-			this.right[0] * (at[0] - this.at[0]) + this.up[0] * (at[1] - this.at[1]),
-			this.up[0] * (at[0] - this.at[0]) + this.up[0] * (at[1] - this.at[1])
-		];
-		return this.func(...local);
+	sample(at, time) {
+		const local = {
+			x:(at[0]-this.at[0])*this.right[0] + (at[1]-this.at[1])*this.right[1],
+			y:(at[0]-this.at[0])*-this.right[1] + (at[1]-this.at[1])*this.right[0]
+		};
+		const seed = this.seed * 16;
+
+		let dis = sdRoundedBox( local, {x:this.radii[0], y:this.radii[1]}, this.round );
+
+		if (this.mode === MODES.WATER_PULSES) {
+			const spacing = 2 * this.radii[1];
+			const rad = this.radii[1];
+			function fract(x) { return x - Math.floor(x); }
+			const wrap = (fract(local.x / spacing + fract(time / 10.0)) - 0.5 ) * spacing;
+			dis = Math.max(dis, sdRoundedBox( {x:wrap, y:local.y}, {x:rad, y:this.radii[1]}, this.round ) );
+		}
+
+		dis += 0.2 * (noise({x:local.x / 1.5 + seed, y:local.y / 1.5 + seed}, 0.0) + 1.0);
+		dis += 0.1 * (noise({x:local.x / 0.7 - 5.0 + seed, y:local.y / 0.7 - 5.0 + seed}, 0.0) + 1.0);
+
+		if (this.mode === MODES.WATER || this.mode == MODES.WATER_PULSES) {
+			const t = time * (300.0 * 2.0 * 3.1415926 / 300.0) + seed;
+			dis += 0.05 * noise({x:local.x / 0.3, y:local.y / 0.3}, t);
+		}
+
+		return dis;
 	}
 }
 
@@ -93,6 +161,7 @@ class World {
 		];
 
 		this.pending = 1;
+		this.time = 0.0; //300-second loop
 
 		let do_load = async () => {
 			const response = await fetch('/world.json');
@@ -142,7 +211,42 @@ class World {
 	}
 
 	sample(at) {
-		//TODO: acceleration structure?
+		//TODO: acceleration structure
+		let ground = 10.0;
+		let cave = 10.0;
+		let water = 10.0;
+		for (const block of this.blocks) {
+			const dis = block.sample(at,this.time);
+			if (block.mode == MODES.GROUND) {
+				ground = smin(ground, dis, 0.2);
+			} else if (block.mode == MODES.CAVE) {
+				cave = smin(cave, dis, 0.2);
+			} else if (block.mode == MODES.WATER || block.mode == MODES.WATER_PULSES) {
+				water = smin(water, dis, 0.2);
+			}
+		}
+		if (ground < 0.0) {
+			if (cave < 0.0) {
+				if (water < 0.0) {
+					//cave water
+					return {water:-water, cave:true, dis:water};
+				} else {
+					//cave air
+					return {air:-cave, cave:true, dis:cave};
+				}
+			} else {
+				//ground
+				return {ground:-ground, dis:ground};
+			}
+		} else {
+			if (water < 0.0) {
+				//water
+				return {water:-water, dis:water};
+			} else {
+				//air
+				return {air:ground, dis:-ground};
+			}
+		}
 	}
 
 	underMouse(MOUSE) {
@@ -179,6 +283,7 @@ class World {
 			]),
 			BLOCKS_COUNT:new Uint32Array([this.blocks.length]),
 			"BLOCKS[0]":new Float32Array(BLOCKS),
+			TIME:[this.time],
 		};
 		const prog = SHADERS.world;
 		gl.useProgram(prog);

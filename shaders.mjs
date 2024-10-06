@@ -36,6 +36,7 @@ SHADERS.load = function SHADERS_load(gl) {
 		in highp vec2 position;
 		uniform uint BLOCKS_COUNT;
 		uniform highp mat3 BLOCKS[100];
+		uniform highp float TIME;
 		precision highp float;
 
 
@@ -44,15 +45,15 @@ SHADERS.load = function SHADERS_load(gl) {
 		//"don't use this" says the source text
 		vec2 g( vec2 n ) { return sin(n.x*n.y*vec2(12,17)+vec2(1,2)); }
 		//vec2 g( vec2 n ) { return sin(n.x*n.y+vec2(0,1.571)); } // if you want the gradients to lay on a circle
-		float noise(vec2 p) {
-			const float kF = 2.0;  // make 6 to see worms
-			vec2 i = floor(p);
-			vec2 f = fract(p);
+		float noise(in highp vec2 p, in highp float ofs) {
+			const highp float kF = 2.0;  // make 6 to see worms
+			highp vec2 i = floor(p);
+			highp vec2 f = fract(p);
 			f = f*f*(3.0-2.0*f);
-			return mix(mix(sin(kF*dot(p,g(i+vec2(0,0)))),
-			               sin(kF*dot(p,g(i+vec2(1,0)))),f.x),
-			           mix(sin(kF*dot(p,g(i+vec2(0,1)))),
-			               sin(kF*dot(p,g(i+vec2(1,1)))),f.x),f.y);
+			return mix(mix(sin(ofs+kF*dot(p,g(i+vec2(0,0)))),
+			               sin(ofs+kF*dot(p,g(i+vec2(1,0)))),f.x),
+			           mix(sin(ofs+kF*dot(p,g(i+vec2(0,1)))),
+			               sin(ofs+kF*dot(p,g(i+vec2(1,1)))),f.x),f.y);
 		}
 
 		//from iq's list of 2D SDFs: https://iquilezles.org/articles/distfunctions2d/
@@ -62,9 +63,9 @@ SHADERS.load = function SHADERS_load(gl) {
 			return min(max(q.x,q.y),0.0) + length(max(q,0.0)) - r;
 		}
 
-		mediump vec4 BLOCK(highp mat3 params, highp vec2 pt) {
+		highp vec4 BLOCK(highp mat3 params, highp vec2 pt) {
 			highp vec2 at = params[0].xy;
-			highp float seed = (params[0].z * 256.0);
+			highp float seed = params[0].z * 16.0;
 			highp vec2 right = params[1].xy;
 			highp float mode = params[1].z;
 			highp vec2 radii = params[2].xy;
@@ -76,12 +77,26 @@ SHADERS.load = function SHADERS_load(gl) {
 			);
 
 			highp float dis = sdRoundedBox( local, radii, round );
-			dis += 0.2 * (noise(local / 1.5 + seed) + 1.0) + 0.1 * (noise(local / 0.7 + vec2(5.0) + seed)+1.0);
+
+			if (mode == 3.0) {
+				highp float spacing = 2.0 * radii.y;
+				highp float rad = radii.y;
+				highp float wrap = (fract(local.x / spacing + fract(TIME / 10.0)) - 0.5 ) * spacing;
+				dis = max(dis, sdRoundedBox( vec2(wrap, local.y), vec2(rad, radii.y), round ) );
+			}
+
+			dis += 0.2 * (noise(local / 1.5 + seed, 0.0) + 1.0);
+			dis += 0.1 * (noise(local / 0.7 - 5.0 + seed, 0.0) + 1.0);
+
+			if (mode == 2.0 || mode == 3.0) {
+				highp float t = TIME * (300.0 * 2.0 * 3.1415926 / 300.0) + seed;
+				dis += 0.05 * noise(local / 0.3, t);
+			}
 			if (mode == 0.0) {
 				return vec4(dis, 10.0, 10.0, 10.0);
 			} else if (mode == 1.0) {
 				return vec4(10.0, dis, 10.0, 10.0);
-			} else if (mode == 2.0) {
+			} else if (mode == 2.0 || mode == 3.0) {
 				return vec4(10.0, 10.0f, dis, 10.0);
 			} else {
 				return vec4(10.0, 10.0f, 10.0, dis);
@@ -90,11 +105,11 @@ SHADERS.load = function SHADERS_load(gl) {
 		layout(location=0) out lowp vec4 fragColor;
 
 		//approxmiate circular smooth minimum from https://iquilezles.org/articles/smin/
-		mediump float smin( mediump float a, mediump float b, mediump float k ) {
+		highp float smin( highp float a, highp float b, highp float k ) {
 			k *= 1.0/(1.0-sqrt(0.5));
-			mediump float h = max( k-abs(a-b), 0.0 )/k;
-			const mediump float b2 = 13.0/4.0 - 4.0*sqrt(0.5);
-			const mediump float b3 =  3.0/4.0 - 1.0*sqrt(0.5);
+			highp float h = max( k-abs(a-b), 0.0 )/k;
+			const highp float b2 = 13.0/4.0 - 4.0*sqrt(0.5);
+			const highp float b3 =  3.0/4.0 - 1.0*sqrt(0.5);
 			return min(a,b) - k*h*h*(h*b3*(h-4.0)+b2);
 		}
 
@@ -102,9 +117,9 @@ SHADERS.load = function SHADERS_load(gl) {
 			//r = ground, < 0 is inside
 			//g = cave, < 0 is inside
 			//b = water, < 0 is inside
-			mediump vec4 acc = vec4(10.0);
+			highp vec4 acc = vec4(10.0);
 			for (highp uint i = 0u; i < BLOCKS_COUNT; ++i) {
-				mediump vec4 vals = BLOCK(BLOCKS[i], position);
+				highp vec4 vals = BLOCK(BLOCKS[i], position);
 				acc.r = smin(acc.r, vals.r, 0.2);
 				acc.g = smin(acc.g, vals.g, 0.2);
 				acc.b = smin(acc.b, vals.b, 0.2);
