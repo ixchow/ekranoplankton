@@ -445,15 +445,13 @@ update.maxPending = 0;
 function update(elapsed) {
 	elapsed = Math.min(elapsed, 0.1);
 
-	/*
-	const pending = TEXTURES.pending + AUDIO.pending;
+	const pending = WORLD.pending;
 	update.maxPending = Math.max(update.maxPending, pending);
 	if (pending > 0) {
 		loadDraw(1.0 - (pending / update.maxPending));
 		queueUpdate();
 		return;
 	}
-	*/
 
 	CAMERA.setMouseWorld(MOUSE);
 
@@ -687,6 +685,8 @@ function keydown(evt) {
 					}
 				}
 				SELECTION = [];
+			} else if (evt.code === 'F4') {
+				WORLD.requestSave();
 			}
 		}
 	}

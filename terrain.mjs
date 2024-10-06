@@ -91,6 +91,54 @@ class World {
 			new Block(MODES.CAVE, [3,-1],Math.PI * 0.5, [4,1.5], 2),
 			new Block(MODES.WATER, [-3,-3],0.0, [2,2], 2),
 		];
+
+		this.pending = 1;
+
+		let do_load = async () => {
+			const response = await fetch('/world.json');
+			const data = await response.json();
+			this.blocks = [];
+
+			for (const block of data.blocks) {
+				this.blocks.push(Block.load(block));
+			}
+
+			this.pending = 0;
+		};
+
+		do_load();
+	}
+
+	requestSave() {
+		if (this.savePending) {
+			this.saveRequested = true;
+			return;
+		}
+
+		this.savePending = true;
+		this.saveRequested = false;
+
+		let do_save = async (data) => {
+			const response = await fetch('/world.json', {
+				method:"PUT",
+				body:data
+			});
+			console.log(response.status);
+			this.savePending = false;
+			if (this.saveRequested) {
+				this.requestSave(); //will actually run another save
+			}
+		};
+
+		const saved = {
+			blocks:[],
+		};
+
+		for (const block of this.blocks) {
+			saved.blocks.push(block.save());
+		}
+
+		do_save(JSON.stringify(saved));
 	}
 
 	sample(at) {
